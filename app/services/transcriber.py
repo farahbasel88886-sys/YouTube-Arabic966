@@ -1,21 +1,18 @@
-"""Local speech-to-text transcription using faster-whisper."""
+"""Speech-to-text transcription via external API (OpenAI-compatible)."""
 
 from pathlib import Path
 
-from faster_whisper import WhisperModel
+import httpx
 
 from app.schemas import TranscriptionResult
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Module-level cache: avoids reloading the same Whisper model on every call.
-_model_cache: dict[str, WhisperModel] = {}
-
 _MODE_TO_MODEL = {
-    "fast": "base",
-    "balanced": "small",
-    "quality": "medium",
+    "fast": "whisper-1",
+    "balanced": "whisper-1",
+    "quality": "whisper-1",
 }
 
 
@@ -39,76 +36,90 @@ def resolve_whisper_model(mode: str, fallback_model: str = "small") -> str:
     return _MODE_TO_MODEL.get(normalized, fallback_model)
 
 
-def transcribe_audio(audio_path: Path, model_name: str = "small") -> TranscriptionResult:
+def transcribe_audio(
+    audio_path: Path,
+    model_name: str = "whisper-1",
+    *,
+    api_key: str | None,
+    base_url: str,
+) -> TranscriptionResult:
     """
-    Transcribe an audio file with faster-whisper.
-
-    The model runs entirely on CPU with int8 quantisation for portability.
+    Transcribe an audio file using an OpenAI-compatible audio API.
 
     Args:
         audio_path: Path to a WAV (or other supported) audio file.
-        model_name: Whisper model size (tiny/base/small/medium/large-v2/…).
+        model_name: Transcription model id (default whisper-1).
 
     Returns:
         TranscriptionResult with the full text and per-segment data.
 
     Raises:
-        TranscriptionError: if the file is missing, the model fails to load,
+        TranscriptionError: if the file is missing, the API call fails,
                             or transcription produces an empty result.
     """
     if not audio_path.exists():
         raise TranscriptionError(f"Audio file not found: {audio_path}")
 
-    if model_name in _model_cache:
-        logger.info(f"Reusing cached Whisper model: {model_name!r}")
-        model = _model_cache[model_name]
-    else:
-        logger.info(f"Loading Whisper model: {model_name!r}")
-        try:
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
-        except Exception as exc:
-            raise TranscriptionError(
-                f"Failed to load Whisper model {model_name!r}: {exc}"
-            ) from exc
-        _model_cache[model_name] = model
-        logger.info(f"Cached Whisper model: {model_name!r}")
-
-    logger.info(f"Transcribing: {audio_path.name}")
-    try:
-        segments_iter, info = model.transcribe(
-            str(audio_path),
-            language="ar",
-            beam_size=5,
-            vad_filter=True,
+    if not api_key:
+        raise TranscriptionError(
+            "OPENAI_API_KEY is required for API-based transcription."
         )
 
+    endpoint = f"{base_url.rstrip('/')}/audio/transcriptions"
+    logger.info(f"Transcribing via API: {audio_path.name} (model={model_name})")
+    try:
+        with audio_path.open("rb") as audio_file:
+            files = {
+                "file": (audio_path.name, audio_file, "audio/mpeg"),
+            }
+            data = {
+                "model": model_name,
+                "language": "ar",
+                "response_format": "json",
+            }
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+            }
+            with httpx.Client(timeout=300.0) as client:
+                resp = client.post(endpoint, headers=headers, data=data, files=files)
+                resp.raise_for_status()
+                payload = resp.json()
+
+        full_text = str(payload.get("text") or "").strip()
+        language = payload.get("language")
+
         segment_list = []
-        text_parts = []
-
-        for seg in segments_iter:
-            text_parts.append(seg.text.strip())
+        for seg in payload.get("segments") or []:
             segment_list.append(
-                {"start": seg.start, "end": seg.end, "text": seg.text.strip()}
+                {
+                    "start": seg.get("start"),
+                    "end": seg.get("end"),
+                    "text": str(seg.get("text") or "").strip(),
+                }
             )
-
+    except httpx.HTTPStatusError as exc:
+        body = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise TranscriptionError(
+            f"OpenAI transcription API error ({exc.response.status_code}): {body}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise TranscriptionError(f"OpenAI transcription request failed: {exc}") from exc
     except Exception as exc:
         raise TranscriptionError(f"Transcription failed: {exc}") from exc
-
-    full_text = " ".join(text_parts).strip()
 
     if not full_text:
         raise TranscriptionError(
             "Transcription produced an empty result. "
-            "Check that the audio contains audible Arabic speech."
+            "Check that the audio contains audible speech."
         )
 
     logger.info(
-        f"Transcription complete — language: {info.language}, "
+        f"Transcription complete — language: {language}, "
         f"segments: {len(segment_list)}"
     )
 
     return TranscriptionResult(
         raw_text=full_text,
-        language=info.language,
+        language=language,
         segments=segment_list,
     )

@@ -3,8 +3,8 @@ Full pipeline orchestrator.
 
 Steps:
 1. Download best audio from YouTube (yt-dlp)
-2. Normalize to WAV mono 16 kHz (ffmpeg)
-3. Transcribe locally (faster-whisper)
+2. Normalize to MP3 mono 16 kHz (ffmpeg)
+3. Transcribe via API
 4. Save transcript-first outputs to outputs/<sanitized_title>/
 """
 
@@ -33,7 +33,9 @@ def _finalize_transcription(
     progress_callback: Callable[[int, int, str], None] | None = None,
     total_steps: int = 5,
     start_step: int = 2,
-    fallback_model: str = "small",
+    transcription_model: str = "whisper-1",
+    openai_api_key: str | None = None,
+    openai_base_url: str = "https://api.openai.com/v1",
 ) -> tuple[TranscriptionResult, str]:
     """Shared audio normalize + transcribe + save logic."""
 
@@ -45,12 +47,12 @@ def _finalize_transcription(
     logger.info("[bold]Step 2/5 — Normalizing audio[/bold]")
     normalized_path = audio.normalize_audio(input_media_path, temp_dir)
 
-    notify(start_step + 1, "Transcribing with Whisper (local)")
+    notify(start_step + 1, "Transcribing via API")
     logger.info("[bold]Step 3/5 — Transcribing[/bold]")
     selected_mode = transcriber.normalize_transcription_mode(transcription_mode)
     whisper_model = transcriber.resolve_whisper_model(
         selected_mode,
-        fallback_model=fallback_model,
+        fallback_model=transcription_model,
     )
     logger.info(
         f"Transcription mode selected: {selected_mode} (model={whisper_model})"
@@ -58,6 +60,8 @@ def _finalize_transcription(
     transcription: TranscriptionResult = transcriber.transcribe_audio(
         normalized_path,
         model_name=whisper_model,
+        api_key=openai_api_key,
+        base_url=openai_base_url,
     )
 
     save_text(output_dir / "raw_transcript.txt", transcription.raw_text)
@@ -159,7 +163,9 @@ def run_pipeline(
         progress_callback=progress_callback,
         total_steps=5,
         start_step=2,
-        fallback_model=settings.WHISPER_MODEL,
+        transcription_model=settings.OPENAI_TRANSCRIPTION_MODEL,
+        openai_api_key=settings.OPENAI_API_KEY,
+        openai_base_url=settings.OPENAI_BASE_URL,
     )
 
     # Clean up temp directory
@@ -232,7 +238,9 @@ def run_pipeline_from_media(
         progress_callback=progress_callback,
         total_steps=4,
         start_step=1,
-        fallback_model=settings.WHISPER_MODEL,
+        transcription_model=settings.OPENAI_TRANSCRIPTION_MODEL,
+        openai_api_key=settings.OPENAI_API_KEY,
+        openai_base_url=settings.OPENAI_BASE_URL,
     )
 
     try:

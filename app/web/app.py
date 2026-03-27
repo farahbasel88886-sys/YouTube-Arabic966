@@ -360,6 +360,8 @@ async def process(body: ProcessRequest):
         msg = str(exc)
         if "ZAI" in type(exc).__name__ or "zai" in msg.lower():
             raise HTTPException(status_code=502, detail=f"Z.ai API error: {msg}")
+        if "transcription" in msg.lower() and "api" in msg.lower():
+            raise HTTPException(status_code=502, detail=f"Transcription API error: {msg}")
         if "DownloadError" in type(exc).__name__:
             raise HTTPException(status_code=400, detail=f"Download failed: {msg}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {msg}")
@@ -455,6 +457,8 @@ async def upload_media(
         _set_progress("failed", _progress_state["percent"], f"Pipeline error: {exc}")
         _schedule_progress_reset()
         msg = str(exc)
+        if "transcription" in msg.lower() and "api" in msg.lower():
+            raise HTTPException(status_code=502, detail=f"Transcription API error: {msg}")
         raise HTTPException(status_code=500, detail=f"Upload processing failed: {msg}")
     finally:
         try:

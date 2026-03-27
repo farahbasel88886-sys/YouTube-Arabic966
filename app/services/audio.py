@@ -23,21 +23,21 @@ def check_ffmpeg() -> None:
 
 def normalize_audio(input_path: Path, output_dir: Path) -> Path:
     """
-    Convert audio to WAV mono 16 kHz using ffmpeg.
+    Convert audio to compact MP3 mono 16 kHz using ffmpeg.
 
     Args:
         input_path: Path to the downloaded audio file.
         output_dir: Directory where the normalized file will be written.
 
     Returns:
-        Path to the normalized WAV file.
+        Path to the normalized MP3 file.
 
     Raises:
         AudioProcessingError: if ffmpeg is missing or conversion fails.
     """
     check_ffmpeg()
 
-    output_path = output_dir / "audio_normalized.wav"
+    output_path = output_dir / "audio_normalized.mp3"
 
     cmd = [
         "ffmpeg",
@@ -45,7 +45,9 @@ def normalize_audio(input_path: Path, output_dir: Path) -> Path:
         "-i", str(input_path),
         "-ac", "1",              # mono
         "-ar", "16000",          # 16 kHz sample rate
-        "-acodec", "pcm_s16le",  # 16-bit PCM
+        "-vn",                    # audio only
+        "-c:a", "libmp3lame",
+        "-b:a", "64k",
         str(output_path),
     ]
 

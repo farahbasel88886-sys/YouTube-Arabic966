@@ -8,8 +8,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4.1-mini"
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_TRANSCRIPTION_MODEL: str = "whisper-1"
     TRANSCRIPTION_MODE: str = "balanced"
-    WHISPER_MODEL: str = "small"
     MAX_UPLOAD_SIZE_MB: int = 100
     OUTPUT_DIR: str = "outputs"
     TEMP_DIR: str = ".temp"
