@@ -1,0 +1,13 @@
+yt-dlp
+faster-whisper
+httpx
+pydantic
+pydantic-settings
+python-dotenv
+typer
+rich
+tenacity
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart

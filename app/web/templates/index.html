@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>محرك النسخ العربي من يوتيوب</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <style>
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .primary-output {
+        border-color: rgba(108, 99, 255, 0.55);
+        box-shadow: 0 8px 30px rgba(108, 99, 255, 0.18);
+      }
+
+      .primary-pill {
+        display: inline-block;
+        margin-inline-start: 8px;
+        font-size: 0.72rem;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(108, 99, 255, 0.2);
+        color: #b9b4ff;
+        vertical-align: middle;
+      }
+
+      #thread-content {
+        font-size: 1.03rem;
+        line-height: 2;
+      }
+
+      .loading-step {
+        color: #b9b4ff;
+        font-weight: 600;
+        margin-top: 6px;
+      }
+
+      .result-card {
+        margin-bottom: 18px;
+      }
+
+      .provider-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 12px;
+        color: var(--txt-muted, #8b8fa8);
+        font-size: 0.9rem;
+      }
+
+      .provider-row label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+      }
+
+      .mode-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 10px;
+      }
+
+      .mode-row select {
+        min-width: 170px;
+        background: rgba(255, 255, 255, 0.05);
+        color: #f8f9ff;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        padding: 8px 10px;
+      }
+
+      .actions-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 14px 0 6px;
+      }
+
+      .action-btn {
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.06);
+        color: #f8f9ff;
+        border-radius: 10px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 0.9rem;
+      }
+
+      .action-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .action-error {
+        color: #ff8a8a;
+        margin-bottom: 12px;
+      }
+
+      .action-status {
+        color: #b9b4ff;
+        margin-bottom: 12px;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <!-- Header -->
+      <header>
+        <h1>📺 محرك النسخ العربي</h1>
+        <p class="subtitle">
+          حوّل أي فيديو يوتيوب إلى نص عربي وملخص وتغريدات وأسئلة شائعة
+        </p>
+      </header>
+
+      <!-- Input card -->
+      <div class="card input-card">
+        <label for="url-input">رابط يوتيوب</label>
+        <div class="input-row">
+          <input
+            id="url-input"
+            type="url"
+            placeholder="https://www.youtube.com/watch?v=..."
+            autocomplete="off"
+            spellcheck="false"
+            dir="ltr"
+          />
+          <button id="submit-btn" onclick="submitUrl()">معالجة</button>
+        </div>
+        <div class="provider-row">
+          <span>Provider:</span>
+          <label>
+            <input type="radio" name="provider" value="zai" checked />
+            Z.ai
+          </label>
+          <label>
+            <input type="radio" name="provider" value="openai" />
+            OpenAI
+          </label>
+        </div>
+        <div class="mode-row">
+          <label for="transcription-mode">Whisper mode:</label>
+          <select id="transcription-mode">
+            <option value="fast">fast (أسرع)</option>
+            <option value="balanced" selected>balanced (متوازن)</option>
+            <option value="quality">quality (أعلى دقة)</option>
+          </select>
+        </div>
+        <div id="error-msg" class="error-msg hidden"></div>
+      </div>
+
+      <!-- Loading -->
+      <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <p id="loading-text">
+          جاري المعالجة… قد تستغرق العملية بضع دقائق للفيديوهات الطويلة
+        </p>
+        <p id="loading-step" class="loading-step">Downloading...</p>
+        <div class="progress-wrap">
+          <div class="progress-track">
+            <div id="progress-bar" class="progress-bar"></div>
+          </div>
+          <p id="progress-percent" class="progress-percent">0%</p>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div id="results" class="hidden">
+        <div id="cache-badge" class="badge badge-cached hidden">
+          ✓ نتائج محفوظة مسبقاً
+        </div>
+
+        <!-- Metadata -->
+        <div class="card meta-card" id="meta-card">
+          <h2>📋 معلومات الفيديو</h2>
+          <div id="meta-content" class="meta-grid"></div>
+        </div>
+
+        <div class="actions-row" id="actions-row">
+          <button
+            class="action-btn"
+            data-label="Clean transcript"
+            onclick="generateArtifact('clean', this)"
+          >
+            Clean transcript
+          </button>
+          <button
+            class="action-btn"
+            data-label="Generate TLDR"
+            onclick="generateArtifact('tldr', this)"
+          >
+            Generate TLDR
+          </button>
+          <button
+            class="action-btn"
+            data-label="Generate Thread"
+            onclick="generateArtifact('thread', this)"
+          >
+            Generate Thread
+          </button>
+          <button
+            class="action-btn"
+            data-label="Generate FAQ"
+            onclick="generateArtifact('faq', this)"
+          >
+            Generate FAQ
+          </button>
+        </div>
+        <div id="action-status" class="action-status hidden"></div>
+        <div id="action-error" class="action-error hidden"></div>
+
+        <!-- Transcript (Primary) -->
+        <div class="card result-card primary-output" id="transcript-card">
+          <div
+            class="card-header collapsible"
+            onclick="toggleSection('transcript-body')"
+          >
+            <h2>
+              📝 النص الكامل <span class="primary-pill">Transcript-first</span>
+            </h2>
+            <div class="header-actions">
+              <button
+                class="copy-btn"
+                onclick="
+                  event.stopPropagation();
+                  copySection('transcript-content', this);
+                "
+              >
+                نسخ
+              </button>
+              <span class="toggle-icon" id="transcript-toggle">▼</span>
+            </div>
+          </div>
+          <div id="transcript-body" class="collapsible-body open">
+            <div id="transcript-content" class="content-block"></div>
+          </div>
+        </div>
+
+        <!-- TLDR -->
+        <div class="card result-card hidden" id="tldr-card">
+          <div
+            class="card-header collapsible"
+            onclick="toggleSection('tldr-body')"
+          >
+            <h2>⚡ النقاط الرئيسية (TL;DR)</h2>
+            <div class="header-actions">
+              <button
+                class="copy-btn"
+                onclick="
+                  event.stopPropagation();
+                  copySection('tldr-content', this);
+                "
+              >
+                نسخ
+              </button>
+              <span class="toggle-icon" id="tldr-toggle">▼</span>
+            </div>
+          </div>
+          <div id="tldr-body" class="collapsible-body open">
+            <div id="tldr-content" class="content-block"></div>
+          </div>
+        </div>
+
+        <!-- Thread -->
+        <div class="card result-card hidden" id="thread-card">
+          <div
+            class="card-header collapsible"
+            onclick="toggleSection('thread-body')"
+          >
+            <h2>🐦 Thread تويتر</h2>
+            <div class="header-actions">
+              <button
+                class="copy-btn"
+                onclick="
+                  event.stopPropagation();
+                  copySection('thread-content', this);
+                "
+              >
+                نسخ
+              </button>
+              <span class="toggle-icon" id="thread-toggle">▼</span>
+            </div>
+          </div>
+          <div id="thread-body" class="collapsible-body open">
+            <div id="thread-content" class="content-block"></div>
+          </div>
+        </div>
+
+        <!-- FAQ -->
+        <div class="card result-card hidden" id="faq-card">
+          <div
+            class="card-header collapsible"
+            onclick="toggleSection('faq-body')"
+          >
+            <h2>❓ الأسئلة الشائعة</h2>
+            <div class="header-actions">
+              <button
+                class="copy-btn"
+                onclick="
+                  event.stopPropagation();
+                  copySection('faq-content', this);
+                "
+              >
+                نسخ
+              </button>
+              <span class="toggle-icon" id="faq-toggle">▼</span>
+            </div>
+          </div>
+          <div id="faq-body" class="collapsible-body open">
+            <div id="faq-content" class="content-block"></div>
+          </div>
+        </div>
+      </div>
+      <!-- /results -->
+    </div>
+    <!-- /container -->
+
+    <script src="/static/script.js"></script>
+  </body>
+</html>

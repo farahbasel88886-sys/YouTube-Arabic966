@@ -1,0 +1,11 @@
+Generate an Arabic FAQ from the following transcript.
+Requirements:
+- 5 to 8 questions that a reader would realistically ask
+- derive questions and answers strictly from the transcript content
+- use clear, modern Arabic
+- format each item as:
+  س: <question>
+  ج: <answer>
+
+Transcript:
+{{transcript}}
