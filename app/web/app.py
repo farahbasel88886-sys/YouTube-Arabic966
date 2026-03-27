@@ -11,22 +11,23 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from time import time
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, field_validator
 
 from app.config import Settings
 from app.services.transcriber import normalize_transcription_mode
-from app.services.downloader import validate_url
+from app.services.downloader import DownloadError, normalize_youtube_url
 from app.utils.logger import get_logger
 from app.web.service import (
     _find_existing,
     _load_outputs,
     _resolve_title,
     generate_from_transcript,
+    process_uploaded_media,
     process_video,
 )
 from app.utils.files import sanitize_title
@@ -75,6 +76,19 @@ _PIPELINE_TIMEOUT = 7200
 _LOCK_ACQUIRE_TIMEOUT = 5
 _PROGRESS_STALE_TIMEOUT = 180
 _PROGRESS_RESET_DELAY = 15
+_MAX_UPLOAD_SIZE_BYTES = _settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+_UPLOAD_FILE_TYPES = {
+    ".mp4": "video",
+    ".mov": "video",
+    ".mkv": "video",
+    ".webm": "video",
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".m4a": "audio",
+    ".aac": "audio",
+    ".ogg": "audio",
+}
 
 _progress_state = {
     "status": "idle",
@@ -127,13 +141,6 @@ class ProcessRequest(BaseModel):
     provider: str = "zai"
     transcription_mode: str = "balanced"
 
-    @field_validator("youtube_url")
-    @classmethod
-    def must_be_youtube(cls, v: str) -> str:
-        if not validate_url(v):
-            raise ValueError("Not a valid YouTube URL")
-        return v.strip()
-
     @field_validator("provider")
     @classmethod
     def must_be_provider(cls, v: str) -> str:
@@ -176,6 +183,79 @@ class GenerateRequest(BaseModel):
         return s or None
 
 
+def _safe_upload_name(filename: str) -> str:
+    raw_name = Path(filename or "uploaded_file").name
+    stem = sanitize_title(Path(raw_name).stem)
+    suffix = Path(raw_name).suffix.lower()
+    return f"{stem or 'uploaded_file'}{suffix}"
+
+
+def _validate_upload_file(file: UploadFile, request: Request) -> tuple[str, str]:
+    filename = (file.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Uploaded file must have a filename.")
+
+    ext = Path(filename).suffix.lower()
+    media_type = _UPLOAD_FILE_TYPES.get(ext)
+    if not media_type:
+        allowed = ", ".join(sorted(_UPLOAD_FILE_TYPES.keys()))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed types: {allowed}",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _MAX_UPLOAD_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File is too large. Max upload size is {_settings.MAX_UPLOAD_SIZE_MB} MB.",
+                )
+        except ValueError:
+            pass
+
+    return ext, media_type
+
+
+def _save_upload_to_temp(upload: UploadFile, settings: Settings) -> Path:
+    temp_dir = Path(settings.TEMP_DIR)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = _safe_upload_name(upload.filename or "uploaded_file")
+    target = temp_dir / f"upload_{int(time())}_{safe_name}"
+
+    written = 0
+    chunk_size = 1024 * 1024
+    try:
+        with target.open("wb") as out:
+            while True:
+                chunk = upload.file.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File is too large. Max upload size is {_settings.MAX_UPLOAD_SIZE_MB} MB.",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        if target.exists():
+            target.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        if target.exists():
+            target.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {exc}")
+
+    if written == 0:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    return target
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -189,7 +269,13 @@ async def index(request: Request):
 async def process(body: ProcessRequest):
     global _pipeline_lock
 
-    url = body.youtube_url
+    original_url = body.youtube_url
+    try:
+        url = normalize_youtube_url(original_url)
+    except DownloadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    logger.info(f"Web URL normalized: {original_url} -> {url}")
     provider = body.provider
     transcription_mode = body.transcription_mode
     _set_progress("processing", 2, "Resolving video info")
@@ -278,6 +364,103 @@ async def process(body: ProcessRequest):
             raise HTTPException(status_code=400, detail=f"Download failed: {msg}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {msg}")
     finally:
+        if acquired:
+            try:
+                _pipeline_lock.release()
+            except ValueError:
+                pass
+
+    return result
+
+
+@app.post("/upload", response_model=ProcessResponse)
+async def upload_media(
+    request: Request,
+    media_file: UploadFile = File(...),
+    provider: str = "zai",
+    transcription_mode: str = "balanced",
+):
+    global _pipeline_lock
+
+    p = (provider or "zai").strip().lower()
+    if p not in {"zai", "openai"}:
+        raise HTTPException(status_code=422, detail="provider must be 'zai' or 'openai'")
+
+    mode = normalize_transcription_mode(transcription_mode)
+
+    _, media_type = _validate_upload_file(media_file, request)
+    saved_path = _save_upload_to_temp(media_file, _settings)
+
+    _set_progress("processing", 2, "Uploading file...")
+
+    acquired = False
+    try:
+        await asyncio.wait_for(_pipeline_lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT)
+        acquired = True
+    except asyncio.TimeoutError:
+        if _is_progress_stale():
+            logger.warning("Detected stale processing state; resetting lock and progress")
+            _pipeline_lock = asyncio.Semaphore(1)
+            _set_progress("idle", 0, "Idle")
+            try:
+                await asyncio.wait_for(_pipeline_lock.acquire(), timeout=_LOCK_ACQUIRE_TIMEOUT)
+                acquired = True
+            except asyncio.TimeoutError:
+                pass
+
+    if not acquired:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=503,
+            detail="A pipeline run is already in progress. Please try again shortly.",
+        )
+
+    async def _run_upload():
+        loop = asyncio.get_event_loop()
+
+        def _progress_callback(step: int, total: int, message: str) -> None:
+            percent = int((step / total) * 100)
+            _set_progress("processing", percent, message)
+
+        return await loop.run_in_executor(
+            None,
+            process_uploaded_media,
+            saved_path,
+            media_file.filename or saved_path.name,
+            media_type,
+            p,
+            mode,
+            _settings,
+            _progress_callback,
+        )
+
+    try:
+        _set_progress("processing", 8, "Processing file...")
+        result = await asyncio.wait_for(_run_upload(), timeout=_PIPELINE_TIMEOUT)
+        _set_progress("completed", 100, "Completed")
+        _schedule_progress_reset()
+    except asyncio.TimeoutError:
+        _set_progress("failed", _progress_state["percent"], "Pipeline timed out")
+        _schedule_progress_reset()
+        raise HTTPException(status_code=504, detail="Pipeline timed out.")
+    except FileNotFoundError as exc:
+        _set_progress("failed", _progress_state["percent"], str(exc))
+        _schedule_progress_reset()
+        raise HTTPException(status_code=500, detail=str(exc))
+    except HTTPException:
+        _schedule_progress_reset()
+        raise
+    except Exception as exc:
+        logger.exception("Upload pipeline failed")
+        _set_progress("failed", _progress_state["percent"], f"Pipeline error: {exc}")
+        _schedule_progress_reset()
+        msg = str(exc)
+        raise HTTPException(status_code=500, detail=f"Upload processing failed: {msg}")
+    finally:
+        try:
+            await media_file.close()
+        except Exception:
+            pass
         if acquired:
             try:
                 _pipeline_lock.release()

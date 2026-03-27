@@ -13,7 +13,8 @@ from typing import Callable
 import yt_dlp
 
 from app.config import Settings
-from app.pipeline import run_pipeline
+from app.pipeline import run_pipeline, run_pipeline_from_media
+from app.services.downloader import DownloadError, normalize_youtube_url
 from app.services import generators
 from app.utils.files import sanitize_title
 from app.utils.logger import get_logger
@@ -42,10 +43,11 @@ _GENERATE_TARGETS: dict[str, tuple[str, str]] = {
 def _resolve_title(url: str) -> str | None:
     """Fetch video title from YouTube without downloading audio."""
     try:
+        url = normalize_youtube_url(url)
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
             info = ydl.extract_info(url, download=False)
             return info.get("title") if info else None
-    except Exception:
+    except (DownloadError, Exception):
         return None
 
 
@@ -224,6 +226,10 @@ def process_video(
     if settings is None:
         settings = Settings()
 
+    original_url = url
+    url = normalize_youtube_url(url)
+    logger.info(f"Service URL normalized: {original_url} -> {url}")
+
     # --- Cache check: resolve title without downloading audio ---
     title = _resolve_title(url)
     if title:
@@ -241,6 +247,34 @@ def process_video(
     result = run_pipeline(
         url,
         settings,
+        provider=provider,
+        transcription_mode=transcription_mode,
+        progress_callback=progress_callback,
+    )
+
+    output_dir = Path(result.output_dir)
+    data = _load_outputs(output_dir)
+    return {"status": "success", "cached": False, "data": data}
+
+
+def process_uploaded_media(
+    media_path: Path,
+    original_filename: str,
+    media_type: str,
+    provider: str = "zai",
+    transcription_mode: str | None = None,
+    settings: Settings | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> dict:
+    """Process an uploaded media file and return transcript-first outputs."""
+    if settings is None:
+        settings = Settings()
+
+    result = run_pipeline_from_media(
+        media_path,
+        settings,
+        original_filename=original_filename,
+        media_type=media_type,
         provider=provider,
         transcription_mode=transcription_mode,
         progress_callback=progress_callback,

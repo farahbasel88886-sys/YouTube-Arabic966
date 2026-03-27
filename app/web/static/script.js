@@ -8,6 +8,8 @@ let _stepTimer = null;
 let _startedAt = 0;
 let _currentVideoId = "";
 let _actionInFlight = false;
+let _inputMode = "url";
+let _selectedUploadFile = null;
 
 // ── Submit ─────────────────────────────────────────────────────────────────
 async function submitUrl() {
@@ -20,15 +22,11 @@ async function submitUrl() {
     showError("الرجاء إدخال رابط يوتيوب.");
     return;
   }
-  if (!isYouTubeUrl(url)) {
-    showError("الرابط غير صالح. يُرجى إدخال رابط يوتيوب صحيح.");
-    return;
-  }
   if (_processing) return;
 
   clearError();
   clearResults();
-  setLoading(true);
+  setLoading(true, "url");
 
   try {
     const res = await fetch("/process", {
@@ -60,7 +58,59 @@ async function submitUrl() {
     showError("تعذّر الاتصال بالخادم. تحقق من أن الخدمة تعمل ثم أعد المحاولة.");
     console.error(err);
   } finally {
-    setLoading(false);
+    setLoading(false, "url");
+  }
+}
+
+async function submitUpload() {
+  const provider = getSelectedProvider();
+  const transcription_mode = getSelectedTranscriptionMode();
+
+  if (_processing) return;
+  if (!_selectedUploadFile) {
+    showError("اختر ملفاً أولاً قبل الرفع.");
+    return;
+  }
+
+  clearError();
+  clearResults();
+  setLoading(true, "upload");
+  updateLoadingStep("Uploading file...");
+
+  try {
+    const form = new FormData();
+    form.append("media_file", _selectedUploadFile);
+
+    const params = new URLSearchParams({ provider, transcription_mode });
+    const res = await fetch(`/upload?${params.toString()}`, {
+      method: "POST",
+      body: form,
+    });
+
+    let json = {};
+    try {
+      json = await res.json();
+    } catch {
+      json = {};
+    }
+
+    if (!res.ok) {
+      showError(humanizeError(res.status, json.detail));
+      return;
+    }
+
+    const rendered = renderResults(json);
+    if (!rendered) {
+      showError(
+        "تمت المعالجة لكن المحتوى الناتج فارغ. جرّب ملفاً آخر أو أعد المحاولة.",
+      );
+      return;
+    }
+  } catch (err) {
+    showError("تعذّر رفع الملف أو الاتصال بالخادم. حاول مرة أخرى.");
+    console.error(err);
+  } finally {
+    setLoading(false, "upload");
   }
 }
 
@@ -70,11 +120,100 @@ document.addEventListener("DOMContentLoaded", () => {
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") submitUrl();
   });
+
+  const fileInput = document.getElementById("media-file-input");
+  const dropzone = document.getElementById("upload-dropzone");
+  if (fileInput) {
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+      setSelectedUploadFile(file);
+    });
+  }
+
+  if (dropzone) {
+    ["dragenter", "dragover"].forEach((evt) => {
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.add("dragover");
+      });
+    });
+    ["dragleave", "drop"].forEach((evt) => {
+      dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragover");
+      });
+    });
+    dropzone.addEventListener("drop", (e) => {
+      const files = e.dataTransfer?.files;
+      const file = files && files.length ? files[0] : null;
+      setSelectedUploadFile(file);
+    });
+  }
 });
 
 // ── Validation ─────────────────────────────────────────────────────────────
 function isYouTubeUrl(url) {
   return url.includes("youtube.com") || url.includes("youtu.be");
+}
+
+function setInputMode(mode) {
+  _inputMode = mode === "upload" ? "upload" : "url";
+  const urlPanel = document.getElementById("url-panel");
+  const uploadPanel = document.getElementById("upload-panel");
+  const urlBtn = document.getElementById("mode-url-btn");
+  const uploadBtn = document.getElementById("mode-upload-btn");
+
+  urlPanel.classList.toggle("hidden", _inputMode !== "url");
+  uploadPanel.classList.toggle("hidden", _inputMode !== "upload");
+  urlBtn.classList.toggle("active", _inputMode === "url");
+  uploadBtn.classList.toggle("active", _inputMode === "upload");
+  clearError();
+}
+
+function browseUploadFile() {
+  const fileInput = document.getElementById("media-file-input");
+  if (fileInput) fileInput.click();
+}
+
+function setSelectedUploadFile(file) {
+  const label = document.getElementById("upload-file-name");
+  _selectedUploadFile = null;
+
+  if (!file) {
+    label.textContent = "";
+    return;
+  }
+
+  const ext = getFileExtension(file.name);
+  if (!isAllowedUploadExt(ext)) {
+    showError("نوع الملف غير مدعوم.");
+    label.textContent = "";
+    return;
+  }
+
+  _selectedUploadFile = file;
+  clearError();
+  label.textContent = `Selected: ${file.name}`;
+}
+
+function getFileExtension(name) {
+  const n = String(name || "");
+  const idx = n.lastIndexOf(".");
+  return idx >= 0 ? n.slice(idx).toLowerCase() : "";
+}
+
+function isAllowedUploadExt(ext) {
+  return [
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".webm",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".ogg",
+  ].includes(ext);
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
@@ -323,25 +462,38 @@ function setSectionOpen(bodyId, open) {
 }
 
 // ── UI helpers ──────────────────────────────────────────────────────────────
-function setLoading(on) {
+function setLoading(on, mode = "url") {
   _processing = on;
   document.getElementById("loading").classList.toggle("hidden", !on);
   const btn = document.getElementById("submit-btn");
+  const uploadBtn = document.getElementById("upload-btn");
+  const browseBtn = document.getElementById("browse-btn");
+  const modeBtns = document.querySelectorAll(".mode-btn");
   const input = document.getElementById("url-input");
+  const uploadInput = document.getElementById("media-file-input");
   const radios = document.querySelectorAll("input[name='provider']");
   const modeSelect = document.getElementById("transcription-mode");
   btn.disabled = on;
+  uploadBtn.disabled = on;
+  browseBtn.disabled = on;
   input.disabled = on;
+  if (uploadInput) uploadInput.disabled = on;
+  modeBtns.forEach((b) => {
+    b.disabled = on;
+  });
   radios.forEach((r) => {
     r.disabled = on;
   });
   if (modeSelect) modeSelect.disabled = on;
+  setActionButtonsDisabled(on);
   if (on) {
     _startedAt = Date.now();
     document.getElementById("loading-text").textContent =
-      "جاري المعالجة… قد تستغرق العملية بضع دقائق للفيديوهات الطويلة";
-    updateLoadingStep("Downloading...");
-    updateProgress(4, "Preparing request");
+      mode === "upload"
+        ? "جاري رفع الملف ومعالجته..."
+        : "جاري المعالجة… قد تستغرق العملية بضع دقائق للفيديوهات الطويلة";
+    updateLoadingStep(mode === "upload" ? "Uploading file..." : "Downloading...");
+    updateProgress(4, mode === "upload" ? "Uploading file" : "Preparing request");
     startStepAnimation();
     startProgressPolling();
   } else {
@@ -355,6 +507,12 @@ function startStepAnimation() {
   _stepTimer = setInterval(() => {
     if (!_processing) return;
     const elapsedSec = Math.floor((Date.now() - _startedAt) / 1000);
+
+    if (_inputMode === "upload" && elapsedSec < 8) {
+      updateLoadingStep("Uploading file...");
+      if (currentProgress() < 18) updateProgress(18, "Uploading file");
+      return;
+    }
 
     if (elapsedSec < 8) {
       updateLoadingStep("Downloading...");
@@ -430,6 +588,12 @@ function currentProgress() {
 
 function mapMessageToStep(message) {
   const m = String(message || "").toLowerCase();
+  if (m.includes("uploading file") || m.includes("uploaded file")) {
+    return "Uploading file...";
+  }
+  if (m.includes("processing file") || m.includes("processing uploaded")) {
+    return "Processing file...";
+  }
   if (m.includes("download")) return "Downloading...";
   if (m.includes("transcrib") || m.includes("whisper"))
     return "Transcribing...";
@@ -486,6 +650,18 @@ function humanizeError(status, detail) {
     d.includes("valid")
   ) {
     return "الرابط غير صالح. أدخل رابط يوتيوب صحيح مثل https://youtu.be/...";
+  }
+
+  if (status === 413 || d.includes("too large") || d.includes("max upload")) {
+    return "حجم الملف كبير جداً. قلّل الحجم ثم أعد المحاولة.";
+  }
+
+  if (d.includes("unsupported file type") || d.includes("unsupported")) {
+    return "نوع الملف غير مدعوم. استخدم MP4/MOV/MKV/WEBM أو MP3/WAV/M4A/AAC/OGG.";
+  }
+
+  if (d.includes("empty")) {
+    return "الملف فارغ. اختر ملفاً صالحاً ثم أعد المحاولة.";
   }
 
   if (status === 503) {

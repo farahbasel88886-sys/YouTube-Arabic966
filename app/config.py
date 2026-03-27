@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     TRANSCRIPTION_MODE: str = "balanced"
     WHISPER_MODEL: str = "small"
+    MAX_UPLOAD_SIZE_MB: int = 100
     OUTPUT_DIR: str = "outputs"
     TEMP_DIR: str = ".temp"
 

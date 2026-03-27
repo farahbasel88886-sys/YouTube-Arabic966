@@ -1,6 +1,8 @@
 """Audio downloader using yt-dlp."""
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
 import yt_dlp
 
 from app.utils.logger import get_logger
@@ -12,9 +14,58 @@ class DownloadError(Exception):
     pass
 
 
+def normalize_youtube_url(url: str) -> str:
+    """
+    Normalize supported YouTube URL shapes into:
+    https://www.youtube.com/watch?v=<video_id>
+
+    Supported inputs:
+    - youtu.be/<id>
+    - youtube.com/watch?v=<id>
+    - youtube.com/shorts/<id>
+    - m.youtube.com/watch?v=<id>
+    """
+    raw = (url or "").strip()
+    if not raw:
+        raise DownloadError("Invalid YouTube URL: empty input.")
+
+    candidate = raw
+    parsed = urlparse(candidate)
+    if not parsed.scheme:
+        candidate = f"https://{raw}"
+        parsed = urlparse(candidate)
+
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+
+    path_parts = [p for p in parsed.path.split("/") if p]
+    video_id = ""
+
+    if host == "youtu.be":
+        if path_parts:
+            video_id = path_parts[0]
+    elif host in {"youtube.com", "m.youtube.com"}:
+        if parsed.path == "/watch":
+            query = parse_qs(parsed.query)
+            video_id = (query.get("v") or [""])[0]
+        elif len(path_parts) >= 2 and path_parts[0] == "shorts":
+            video_id = path_parts[1]
+
+    video_id = (video_id or "").strip().split("?")[0].split("&")[0]
+    if not video_id:
+        raise DownloadError(f"Invalid YouTube URL: {url!r}")
+
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def validate_url(url: str) -> bool:
-    """Return True if the URL looks like a YouTube link."""
-    return "youtube.com" in url or "youtu.be" in url
+    """Return True if URL can be normalized to a supported YouTube watch URL."""
+    try:
+        normalize_youtube_url(url)
+        return True
+    except Exception:
+        return False
 
 
 def download_audio(url: str, output_dir: Path) -> tuple[Path, dict]:
@@ -27,8 +78,10 @@ def download_audio(url: str, output_dir: Path) -> tuple[Path, dict]:
     Raises:
         DownloadError: on invalid URL, unavailable video, or yt-dlp failure.
     """
-    if not validate_url(url):
-        raise DownloadError(f"Invalid YouTube URL: {url!r}")
+    original_url = url
+    normalized_url = normalize_youtube_url(url)
+    logger.info(f"YouTube URL normalized: {original_url} -> {normalized_url}")
+    url = normalized_url
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
