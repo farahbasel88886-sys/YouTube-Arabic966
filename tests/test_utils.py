@@ -126,6 +126,18 @@ class TestValidateUrl:
         from app.services.downloader import validate_url
         assert validate_url("") is False
 
+    def test_youtu_be_with_t_param(self):
+        from app.services.downloader import validate_url
+        assert validate_url("https://youtu.be/abc123?t=14") is True
+
+    def test_shorts_url(self):
+        from app.services.downloader import validate_url
+        assert validate_url("https://youtube.com/shorts/abc123?feature=share") is True
+
+    def test_non_youtube_rejected(self):
+        from app.services.downloader import validate_url
+        assert validate_url("https://example.com/watch?v=abc123") is False
+
 
 # ---------------------------------------------------------------------------
 # app.schemas

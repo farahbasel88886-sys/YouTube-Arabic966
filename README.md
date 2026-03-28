@@ -4,7 +4,7 @@ A local Python CLI pipeline that takes a YouTube URL and produces:
 
 | File                 | Description                             |
 | -------------------- | --------------------------------------- |
-| `raw_transcript.txt` | Raw Whisper output                      |
+| `raw_transcript.txt` | Raw transcription output                |
 | `transcript_ar.md`   | Cleaned and formatted Arabic transcript |
 | `summary_tldr.md`    | TL;DR — up to 5 key points              |
 | `twitter_thread.md`  | Arabic Twitter/X thread (6–10 tweets)   |
@@ -15,13 +15,13 @@ A local Python CLI pipeline that takes a YouTube URL and produces:
 
 ## Requirements
 
-| Dependency     | Purpose                            |
-| -------------- | ---------------------------------- |
-| Python 3.11+   | Runtime                            |
-| ffmpeg         | Audio extraction and normalisation |
-| yt-dlp         | YouTube audio download             |
-| faster-whisper | Local Arabic transcription         |
-| Z.ai API key   | Post-processing and generation     |
+| Dependency       | Purpose                            |
+| ---------------- | ---------------------------------- |
+| Python 3.11+     | Runtime                            |
+| ffmpeg           | Audio extraction and normalisation |
+| yt-dlp           | YouTube audio download             |
+| OpenAI audio API | API-based transcription            |
+| Z.ai API key     | Post-processing and generation     |
 
 ---
 
@@ -131,7 +131,7 @@ app/
   services/
     downloader.py  # yt-dlp audio download
     audio.py       # ffmpeg normalisation
-    transcriber.py # faster-whisper transcription
+    transcriber.py # OpenAI-compatible transcription API
     zai_client.py  # Z.ai API adapter (isolated)
     generators.py  # Content generation helpers
   prompts/
@@ -162,14 +162,35 @@ requirements.txt
 
 ## Configuration Reference
 
-| Variable        | Default               | Description                          |
-| --------------- | --------------------- | ------------------------------------ |
-| `ZAI_API_KEY`   | _(required)_          | Z.ai bearer token                    |
-| `ZAI_BASE_URL`  | `https://api.z.ai/v1` | Z.ai API base URL                    |
-| `ZAI_MODEL`     | _(required)_          | Model identifier                     |
-| `WHISPER_MODEL` | `small`               | Whisper model size                   |
-| `OUTPUT_DIR`    | `outputs`             | Where outputs are saved              |
-| `TEMP_DIR`      | `.temp`               | Temporary download/processing folder |
+| Variable                     | Default               | Description                          |
+| ---------------------------- | --------------------- | ------------------------------------ |
+| `ZAI_API_KEY`                | _(required)_          | Z.ai bearer token                    |
+| `ZAI_BASE_URL`               | `https://api.z.ai/v1` | Z.ai API base URL                    |
+| `ZAI_MODEL`                  | _(required)_          | Model identifier                     |
+| `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1`           | Transcription model id               |
+| `OUTPUT_DIR`                 | `outputs`             | Where outputs are saved              |
+| `TEMP_DIR`                   | `.temp`               | Temporary download/processing folder |
+
+---
+
+## Personal VPS Deployment (Ubuntu)
+
+For personal-use deployment on a VPS (not SaaS), use:
+
+- [docker-compose.vps.yml](docker-compose.vps.yml)
+- [deploy/VPS_UBUNTU_PERSONAL.md](deploy/VPS_UBUNTU_PERSONAL.md)
+
+Quick start:
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.vps.yml up -d --build
+```
+
+Persistent host storage defaults:
+
+- `/opt/yt-arabic/data/outputs` -> `/app/outputs`
+- `/opt/yt-arabic/data/temp` -> `/app/.temp`
 
 ---
 

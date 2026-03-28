@@ -24,6 +24,8 @@ COPY README.md ./
 
 RUN mkdir -p outputs .temp
 
+VOLUME ["/app/outputs", "/app/.temp"]
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

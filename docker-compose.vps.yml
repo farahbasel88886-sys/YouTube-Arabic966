@@ -1,0 +1,18 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yt-arabic-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+      OUTPUT_DIR: /app/outputs
+      TEMP_DIR: /app/.temp
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - /opt/yt-arabic/data/outputs:/app/outputs
+      - /opt/yt-arabic/data/temp:/app/.temp

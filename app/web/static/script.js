@@ -22,6 +22,10 @@ async function submitUrl() {
     showError("الرجاء إدخال رابط يوتيوب.");
     return;
   }
+  if (!isYouTubeUrl(url)) {
+    showError("الرابط غير صالح. أدخل رابط يوتيوب صحيح.");
+    return;
+  }
   if (_processing) return;
 
   clearError();
@@ -125,7 +129,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const dropzone = document.getElementById("upload-dropzone");
   if (fileInput) {
     fileInput.addEventListener("change", () => {
-      const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+      const file =
+        fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
       setSelectedUploadFile(file);
     });
   }
@@ -152,8 +157,44 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ── Validation ─────────────────────────────────────────────────────────────
+function getYouTubeVideoId(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    try {
+      parsed = new URL(`https://${raw}`);
+    } catch {
+      return null;
+    }
+  }
+
+  let host = (parsed.hostname || "").toLowerCase();
+  if (host.startsWith("www.")) host = host.slice(4);
+
+  const pathname = parsed.pathname || "";
+  const searchParams = parsed.searchParams;
+  let videoId = null;
+
+  if (host === "youtu.be") {
+    videoId = pathname.slice(1).split("/")[0] || null;
+  } else if (host === "youtube.com" || host === "m.youtube.com") {
+    if (pathname === "/watch") {
+      videoId = searchParams.get("v");
+    } else if (pathname.startsWith("/shorts/")) {
+      videoId = pathname.slice("/shorts/".length).split("/")[0] || null;
+    }
+  }
+
+  const normalized = String(videoId || "").trim();
+  return normalized || null;
+}
+
 function isYouTubeUrl(url) {
-  return url.includes("youtube.com") || url.includes("youtu.be");
+  return getYouTubeVideoId(url) !== null;
 }
 
 function setInputMode(mode) {
@@ -492,8 +533,13 @@ function setLoading(on, mode = "url") {
       mode === "upload"
         ? "جاري رفع الملف ومعالجته..."
         : "جاري المعالجة… قد تستغرق العملية بضع دقائق للفيديوهات الطويلة";
-    updateLoadingStep(mode === "upload" ? "Uploading file..." : "Downloading...");
-    updateProgress(4, mode === "upload" ? "Uploading file" : "Preparing request");
+    updateLoadingStep(
+      mode === "upload" ? "Uploading file..." : "Downloading...",
+    );
+    updateProgress(
+      4,
+      mode === "upload" ? "Uploading file" : "Preparing request",
+    );
     startStepAnimation();
     startProgressPolling();
   } else {

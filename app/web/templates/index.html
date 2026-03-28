@@ -138,7 +138,9 @@
         padding: 18px;
         text-align: center;
         background: rgba(255, 255, 255, 0.03);
-        transition: border-color 0.15s, background 0.15s;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
       }
 
       .upload-dropzone.dragover {
@@ -240,7 +242,11 @@
               class="hidden"
             />
             <div class="upload-actions">
-              <button id="browse-btn" type="button" onclick="browseUploadFile()">
+              <button
+                id="browse-btn"
+                type="button"
+                onclick="browseUploadFile()"
+              >
                 Browse Files
               </button>
               <button id="upload-btn" type="button" onclick="submitUpload()">
