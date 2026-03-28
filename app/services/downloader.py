@@ -11,19 +11,24 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
+# Fixed path — no tempfile, survives the entire request lifetime.
 _COOKIES_PATH = "/tmp/yt_cookies.txt"
 
 
+# ---------------------------------------------------------------------------
+# Cookies helpers
+# ---------------------------------------------------------------------------
+
 def _prepare_cookies() -> str | None:
     """
-    Read YTDLP_COOKIES env var (base64-encoded Netscape cookies.txt),
-    decode it and write to a fixed path at /tmp/yt_cookies.txt.
+    Decode YTDLP_COOKIES (base64-encoded Netscape cookies.txt) and write it
+    to /tmp/yt_cookies.txt.
 
-    Returns the path string if successful, None otherwise.
-    Both print() and logger are used so output is visible in Render stdout logs.
+    Returns the path on success, None on any failure or when env var is absent.
+    Uses print(..., flush=True) so output is always visible in Render stdout.
     """
     raw_b64 = os.environ.get("YTDLP_COOKIES", "").strip()
+
     if not raw_b64:
         print("[yt-dlp] YTDLP_COOKIES not set — running without cookies", flush=True)
         logger.info("YTDLP_COOKIES not set — running without cookies")
@@ -39,14 +44,59 @@ def _prepare_cookies() -> str | None:
     try:
         Path(_COOKIES_PATH).write_bytes(decoded)
     except OSError as exc:
-        print(f"[yt-dlp] Failed to write cookies to {_COOKIES_PATH}: {exc} — running without cookies", flush=True)
-        logger.warning(f"Failed to write cookies file: {exc}")
+        print(f"[yt-dlp] Cannot write {_COOKIES_PATH}: {exc} — running without cookies", flush=True)
+        logger.warning(f"Cannot write cookies file: {exc}")
         return None
 
     print(f"[yt-dlp] Using cookies: {_COOKIES_PATH} ({len(decoded)} bytes)", flush=True)
     logger.info(f"Using cookies: {_COOKIES_PATH} ({len(decoded)} bytes)")
     return _COOKIES_PATH
 
+
+def _run_ydl(ydl_opts: dict, url: str, cookies_path: str | None) -> dict:
+    """
+    Run yt-dlp with the given options. If bot-detection triggers and cookies
+    were supplied, retry once without cookies. Returns the info dict.
+
+    Raises DownloadError on unrecoverable failure.
+    """
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"Fetching: {url}  cookies={'yes' if cookies_path else 'no'}")
+            return ydl.extract_info(url, download=True)
+
+    except yt_dlp.utils.DownloadError as exc:
+        err_msg = str(exc)
+        is_bot = "Sign in to confirm" in err_msg or "bot" in err_msg.lower()
+
+        if is_bot and cookies_path:
+            # Cookies didn't help — try once more without them.
+            print("[yt-dlp] Bot-detection despite cookies — retrying without cookies", flush=True)
+            logger.warning("Bot-detection despite cookies — retrying without cookies")
+            fallback_opts = {k: v for k, v in ydl_opts.items() if k != "cookiefile"}
+            try:
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
+                    return ydl2.extract_info(url, download=True)
+            except yt_dlp.utils.DownloadError as exc2:
+                raise DownloadError(f"yt-dlp failed (with and without cookies): {exc2}") from exc2
+
+        if is_bot:
+            print(
+                "[yt-dlp] Bot-detection triggered. "
+                "Set YTDLP_COOKIES env var (base64 cookies.txt) to fix this.",
+                flush=True,
+            )
+            logger.error(
+                "YouTube bot-detection triggered. "
+                "Set YTDLP_COOKIES env var (base64-encoded cookies.txt)."
+            )
+
+        raise DownloadError(f"yt-dlp failed: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 class DownloadError(Exception):
     pass
@@ -111,10 +161,10 @@ def download_audio(url: str, output_dir: Path) -> tuple[Path, dict]:
     Download the best available audio stream from a YouTube URL.
 
     Returns:
-        (audio_path, metadata_dict) where audio_path is the downloaded file.
+        (audio_path, metadata_dict)
 
     Raises:
-        DownloadError: on invalid URL, unavailable video, or yt-dlp failure.
+        DownloadError: invalid URL, unavailable video, or yt-dlp failure.
     """
     original_url = url
     normalized_url = normalize_youtube_url(url)
@@ -123,14 +173,13 @@ def download_audio(url: str, output_dir: Path) -> tuple[Path, dict]:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # yt-dlp writes the file; we capture info via the info_dict
     downloaded_files: list[Path] = []
 
     def _on_progress(d: dict) -> None:
         if d.get("status") == "finished":
             downloaded_files.append(Path(d["filename"]))
 
-    ydl_opts = {
+    ydl_opts: dict = {
         "format": "bestaudio/best",
         "outtmpl": str(output_dir / "%(title)s.%(ext)s"),
         "quiet": True,
@@ -138,47 +187,18 @@ def download_audio(url: str, output_dir: Path) -> tuple[Path, dict]:
         "progress_hooks": [_on_progress],
     }
 
+    # Inject cookies if available.
     cookies_path = _prepare_cookies()
     if cookies_path:
         ydl_opts["cookiefile"] = cookies_path
-        print(f"[yt-dlp] cookiefile option set: {ydl_opts['cookiefile']}", flush=True)
+        print(f"[yt-dlp] cookiefile set: {cookies_path}", flush=True)
 
-    info = None
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Fetching info for: {url} (cookies={'yes' if cookies_path else 'no'})")
-            info = ydl.extract_info(url, download=True)
-    except yt_dlp.utils.DownloadError as exc:
-        err_msg = str(exc)
-        is_bot = "Sign in to confirm" in err_msg or "bot" in err_msg.lower()
-        if is_bot and cookies_path:
-            # cookies were supplied but still failed — try once without
-            print(f"[yt-dlp] Bot-detection despite cookies, retrying without cookies", flush=True)
-            logger.warning("Bot-detection despite cookies — retrying without cookies")
-            fallback_opts = {k: v for k, v in ydl_opts.items() if k != "cookiefile"}
-            try:
-                with yt_dlp.YoutubeDL(fallback_opts) as ydl2:
-                    info = ydl2.extract_info(url, download=True)
-            except yt_dlp.utils.DownloadError as exc2:
-                raise DownloadError(f"yt-dlp failed (with and without cookies): {exc2}") from exc2
-        elif is_bot:
-            print(
-                "[yt-dlp] Bot-detection triggered. "
-                "Set YTDLP_COOKIES env var with base64-encoded cookies.txt.",
-                flush=True,
-            )
-            logger.error(
-                "YouTube bot-detection triggered. "
-                "Set YTDLP_COOKIES env var with base64-encoded cookies.txt."
-            )
-            raise DownloadError(f"yt-dlp failed: {exc}") from exc
-        else:
-            raise DownloadError(f"yt-dlp failed: {exc}") from exc
+    info = _run_ydl(ydl_opts, url, cookies_path)
 
     if info is None:
         raise DownloadError("yt-dlp returned no video info.")
 
-    # Prefer the path captured by the progress hook; fall back to glob
+    # Prefer the path from the progress hook; fall back to directory scan.
     if downloaded_files:
         audio_path = downloaded_files[-1]
     else:
