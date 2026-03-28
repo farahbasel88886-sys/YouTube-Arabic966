@@ -1,5 +1,9 @@
 """Audio downloader using yt-dlp."""
 
+import base64
+import contextlib
+import os
+import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -8,6 +12,39 @@ import yt_dlp
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@contextlib.contextmanager
+def _cookies_file():
+    """
+    Yield a path to a cookies.txt file if YTDLP_COOKIES env var is set
+    (base64-encoded Netscape cookies), otherwise yield None.
+
+    The temp file is deleted on exit regardless of success or failure.
+    """
+    raw_b64 = os.environ.get("YTDLP_COOKIES", "").strip()
+    if not raw_b64:
+        logger.debug("YTDLP_COOKIES not set — running without cookies")
+        yield None
+        return
+
+    try:
+        decoded = base64.b64decode(raw_b64)
+    except Exception as exc:
+        logger.warning(f"YTDLP_COOKIES is set but could not be decoded: {exc} — running without cookies")
+        yield None
+        return
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="wb")
+    try:
+        tmp.write(decoded)
+        tmp.flush()
+        tmp.close()
+        logger.info(f"Using cookies file: {tmp.name} ({len(decoded)} bytes)")
+        yield tmp.name
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp.name)
 
 
 class DownloadError(Exception):
@@ -101,10 +138,19 @@ def download_audio(url: str, output_dir: Path) -> tuple[Path, dict]:
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Fetching info for: {url}")
-            info = ydl.extract_info(url, download=True)
+        with _cookies_file() as cookies_path:
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                logger.info(f"Fetching info for: {url}")
+                info = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as exc:
+        err_msg = str(exc)
+        if "Sign in to confirm" in err_msg or "bot" in err_msg.lower():
+            logger.error(
+                "YouTube bot-detection triggered. "
+                "Set YTDLP_COOKIES env var with base64-encoded cookies.txt to fix this on cloud deployments."
+            )
         raise DownloadError(f"yt-dlp failed: {exc}") from exc
 
     if info is None:

@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     MAX_UPLOAD_SIZE_MB: int = 100
     OUTPUT_DIR: str = "outputs"
     TEMP_DIR: str = ".temp"
+    # Optional: base64-encoded contents of a YouTube cookies.txt (Netscape format).
+    # Set this env var on Render to bypass bot-detection on cloud IPs.
+    # Export via: base64 -w0 cookies.txt
+    YTDLP_COOKIES: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
